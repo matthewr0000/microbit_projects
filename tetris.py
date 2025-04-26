@@ -8,15 +8,14 @@ import random
 lives = 10
 last_rotation_time = 0
 rotation_cooldown = 500  # milliseconds
-rotation_slowdown_duration = 2000  # 2 seconds slowdown after rotation
-fall_speed = 1000  # base falling speed
-slow_fall_speed = 2000  # slowed down speed during slowdown period
-last_slowdown_end_time = 0  # time when slowdown ends
-is_rotating = False  # flag for rotation state
-board = [[0 for _ in range(5)] for _ in range(5)]  # 5x5 grid for the game
+level = 1  # Starts at level 1
+lines_cleared_total = 0  # Total lines cleared to track level
+fall_speed_base = 1000  # base falling speed in ms
+board = [[0 for _ in range(5)] for _ in range(7)]  # 7 rows with 2 hidden above
 current_piece = None
 piece_x = 0
 piece_y = 0
+last_move = running_time()
 
 # Define Tetris pieces (L, I, and Square shapes)
 pieces = [
@@ -52,7 +51,7 @@ def check_collision(x, y, piece):
             if piece[py][px]:
                 new_x = x + px
                 new_y = y + py
-                if new_x < 0 or new_x >= 5 or new_y >= 5:
+                if new_x < 0 or new_x >= 5 or new_y >= 7:  # Updated y bound to 7 for larger board
                     return True
                 if new_y >= 0 and board[new_y][new_x]:
                     return True
@@ -72,34 +71,35 @@ def merge_piece():
     current_piece = None
 
 def clear_lines():
-    global board
+    global board, lines_cleared_total, level
+    lines_cleared_this_call = 0
     new_board = []
     for row in board:
-        if not all(row):  # If row is not completely filled
+        if not all(row):  # If not completely filled
             new_board.append(row)
-    while len(new_board) < 5:
-        new_board.insert(0, [0, 0, 0, 0, 0])  # Add empty rows at the top
+        else:
+            lines_cleared_this_call += 1
+    lines_cleared_total += lines_cleared_this_call
+    # Update level every 5 lines cleared
+    if lines_cleared_total // 5 >= level:
+        level += 1
+    while len(new_board) < 7:  # Ensure board has 7 rows
+        new_board.insert(0, [0, 0, 0, 0, 0])
     board = new_board
+    return lines_cleared_this_call  # Return for potential future use, but not needed here
 
 def update_display():
+    current_time = running_time()
     board_brightness = 4  # Always dim for placed pieces
-    piece_brightness = max(1, int((lives / 10.0) * 9))  # Brightness for current piece based on lives
+    piece_brightness = max(1, int((lives / 10.0) * 9))  # Normal brightness based on lives
     display.clear()
-    if is_rotating:
-        # Show border by lighting edge pixels
+    # Show only visible rows (game y=2 to 6), mapped to display y=0 to 4
+    for display_y in range(5):
+        game_y = display_y + 2  # Map display y to game y
         for x in range(5):
-            display.set_pixel(x, 0, 9)  # Top row
-            display.set_pixel(x, 4, 9)  # Bottom row
-        for y in range(5):
-            display.set_pixel(0, y, 9)  # Left column
-            display.set_pixel(4, y, 9)  # Right column
-        # Avoid overwriting corners by setting them once
-    # Show the board with fixed dim brightness
-    for y in range(5):
-        for x in range(5):
-            if board[y][x]:
-                display.set_pixel(x, y, board_brightness)
-    # Show the current falling piece with lives-based brightness
+            if board[game_y][x]:
+                display.set_pixel(x, display_y, board_brightness)
+    # Show the current falling piece with appropriate brightness, only if in visible range
     if current_piece:
         piece_height = len(current_piece)
         piece_width = len(current_piece[0])
@@ -108,21 +108,18 @@ def update_display():
                 if current_piece[py][px]:
                     px_pos = piece_x + px
                     py_pos = piece_y + py
-                    if 0 <= px_pos < 5 and 0 <= py_pos < 5:
-                        display.set_pixel(px_pos, py_pos, piece_brightness)
+                    if 0 <= px_pos < 5 and 0 <= py_pos < 7 and 2 <= py_pos <= 6:  # Check full bounds and visible range
+                        display_x = px_pos
+                        display_y = py_pos - 2  # Map game y to display y
+                        display.set_pixel(display_x, display_y, piece_brightness)
 
 # Initialize first piece
 spawn_piece()
 
-last_move = running_time()
-
 while True:
     current_time = running_time()
-    # Handle slowdown after rotation
-    if current_time - last_slowdown_end_time < rotation_slowdown_duration:
-        current_fall_speed = slow_fall_speed
-    else:
-        current_fall_speed = fall_speed
+    # Calculate fall speed based on level
+    current_fall_speed = max(200, fall_speed_base - 200 * (level - 1))  # Min 200ms to avoid too fast
     if current_time - last_move > current_fall_speed:
         if current_piece:
             if not check_collision(piece_x, piece_y + 1, current_piece):
@@ -140,18 +137,20 @@ while True:
                                 display.set_pixel(x, y, 9)  # Flash bright for 200ms
                         sleep(200)
                         display.clear()
-                        # Reset board and spawn new piece
-                        board = [[0 for _ in range(5)] for _ in range(5)]
+                        # Reset board and spawn new piece with 7 rows
+                        board = [[0 for _ in range(5)] for _ in range(7)]
                         spawn_piece()
                     else:
                         # Game over, show sad face and reset after a delay
                         display.show(Image.SAD)
                         sleep(2000)  # Wait 2 seconds
                         lives = 10  # Reset lives
-                        board = [[0 for _ in range(5)] for _ in range(5)]
+                        level = 1  # Reset level
+                        lines_cleared_total = 0  # Reset lines cleared
+                        board = [[0 for _ in range(5)] for _ in range(7)]  # Reset to 7 rows
                         spawn_piece()
         last_move = current_time
-    # Control piece using buttons A and B, rotate on both pressed with slowdown and border
+    # Control piece using buttons A and B, rotate on both pressed
     if button_a.was_pressed() and current_piece and not check_collision(piece_x - 1, piece_y, current_piece):
         piece_x -= 1
     if button_b.was_pressed() and current_piece and not check_collision(piece_x + 1, piece_y, current_piece):
@@ -162,16 +161,17 @@ while True:
             if not check_collision(piece_x, piece_y, rotated_piece):
                 current_piece = rotated_piece
                 last_rotation_time = current_time
-                last_slowdown_end_time = current_time + rotation_slowdown_duration  # Set slowdown end time
-                is_rotating = True  # Set rotation flag
             else:
-                is_rotating = False  # Reset if rotation not possible
-        else:
-            is_rotating = False
-    else:
-        is_rotating = False  # Reset flag if buttons not pressed
-    if is_rotating:
-        # Keep border on during the rotation action, but since it's checked in update_display, no need for delay here
-        pass
+                # Try kicking left by one
+                if not check_collision(piece_x - 1, piece_y, rotated_piece):
+                    piece_x -= 1
+                    current_piece = rotated_piece
+                    last_rotation_time = current_time
+                # Try kicking right by one
+                elif not check_collision(piece_x + 1, piece_y, rotated_piece):
+                    piece_x += 1
+                    current_piece = rotated_piece
+                    last_rotation_time = current_time
+                # If still collision, no rotation
     update_display()
     sleep(50)  # Small delay to prevent flickering
